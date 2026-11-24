@@ -256,12 +256,14 @@ private struct TimelineStrip: View {
         let center = model.centerTime
         let spp = model.secondsPerPoint
         let ranges = model.ranges
+        let checked = Array(model.checkedSpans.values)
         let now = model.now
         let isLight = colorScheme == .light
 
         GeometryReader { geo in
             Canvas { ctx, size in
-                draw(in: &ctx, size: size, center: center, spp: spp, ranges: ranges, now: now, isLight: isLight)
+                draw(in: &ctx, size: size, center: center, spp: spp, ranges: ranges,
+                     checked: checked, now: now, isLight: isLight)
             }
             .overlay { playhead(width: geo.size.width) }
             .overlay(alignment: .bottomTrailing) { zoomButtons.padding(12) }
@@ -328,7 +330,7 @@ private struct TimelineStrip: View {
     }
 
     private func draw(in ctx: inout GraphicsContext, size: CGSize, center: Double, spp: Double,
-                      ranges: [RecordingRange], now: Double, isLight: Bool) {
+                      ranges: [RecordingRange], checked: [ClosedRange<Double>], now: Double, isLight: Bool) {
         let top = Self.playheadY
         func y(_ t: Double) -> CGFloat { top - CGFloat((t - center) / spp) }
         // Never draw past "now".
@@ -336,16 +338,29 @@ private struct TimelineStrip: View {
         let tBottom = center - Double(size.height - top) * spp
         let trackWidth = size.width - trackInset - 16
 
-        // Track background (only up to "now"): anything not covered by footage is a gap, shown light gray.
+        let footage: Color = isLight ? .white : .black
+
+        // Track background (only up to "now") in the footage color, so time that hasn't
+        // loaded yet doesn't flash as a gap.
         let trackTop = max(0, y(now))
         let track = CGRect(x: trackInset, y: trackTop, width: trackWidth, height: size.height - trackTop)
-        ctx.fill(Path(roundedRect: track, cornerRadius: 6), with: .color(Color(.systemGray3)))
+        ctx.fill(Path(roundedRect: track, cornerRadius: 6), with: .color(footage))
 
-        // Recorded footage: white in light mode, black in dark mode; gaps show the gray track.
+        // Gaps: time that has been checked, drawn gray; footage is drawn over it below.
+        ctx.drawLayer { layer in
+            layer.clip(to: Path(roundedRect: track, cornerRadius: 6))
+            for span in checked where span.upperBound > tBottom && span.lowerBound < tTop {
+                let y1 = y(min(span.upperBound, tTop)), y2 = y(max(span.lowerBound, tBottom))
+                layer.fill(Path(CGRect(x: trackInset, y: y1, width: trackWidth, height: y2 - y1)),
+                           with: .color(Color(.systemGray3)))
+            }
+        }
+
+        // Recorded footage: white in light mode, black in dark mode.
         for r in ranges where r.end > tBottom && r.start < tTop {
             let y1 = y(min(r.end, tTop)), y2 = y(max(r.start, tBottom))
             let rect = CGRect(x: trackInset, y: y1, width: trackWidth, height: max(2, y2 - y1))
-            ctx.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(isLight ? .white : .black))
+            ctx.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(footage))
         }
 
         // Time ticks, aligned to local time.

@@ -19,6 +19,9 @@ final class TimelineModel {
     var secondsPerPoint: Double = 6
     private(set) var mode: Mode = .live
     private(set) var ranges: [RecordingRange] = []
+    /// For each day that has been fetched: the start of the day and how far it was checked.
+    /// Only time inside these spans can be shown as a gap; the rest isn't known yet.
+    private(set) var checkedSpans: [Date: ClosedRange<Double>] = [:]
     private(set) var isPlaying = false
     /// Live view frozen on the current frame.
     private(set) var isLivePaused = false
@@ -331,6 +334,7 @@ final class TimelineModel {
                 do {
                     let found = try await self.client.recordingRanges(camera: self.camera, after: start, before: min(end, self.now))
                     self.ranges = FrigateClient.merge(self.ranges + found)
+                    self.checkedSpans[day] = start...max(start, min(end, self.now))
                     // Today keeps growing; don't mark it as fully loaded.
                     if end < self.now { self.loadedDays.insert(day) }
                 } catch {
