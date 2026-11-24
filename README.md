@@ -29,7 +29,7 @@ Spyglass is an independent project and is not affiliated with Frigate.
 ## Getting started
 
 1. Open `FrigateViewer.xcodeproj` in Xcode.
-2. Choose your development team under **Signing & Capabilities**, and change the bundle identifier from `com.example.FrigateViewer` to your own.
+2. Choose your development team under **Signing & Capabilities**, and change the bundle identifier (`com.admiralduder.Spyglass`) to one of your own.
 3. Build and run on a simulator or your iPhone.
 4. In the app, open **Settings** and enter your server address, for example `http://192.168.1.10:5000`, then tap **Save & Connect**.
 
