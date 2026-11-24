@@ -31,6 +31,8 @@ final class FrigateClient {
     /// Whether the server has any events at all; nil until checked.
     /// Detection may be off, in which case the app hides everything about events.
     private(set) var hasEvents: Bool?
+    /// Cameras that aren't sending video right now, from the server's stats.
+    private(set) var offlineCameras: Set<String> = []
 
     @ObservationIgnored private var session: URLSession
     @ObservationIgnored private var sessionAllowsSelfSigned: Bool
@@ -58,6 +60,7 @@ final class FrigateClient {
         config = nil
         version = nil
         hasEvents = nil
+        offlineCameras = []
         if let url = settings.baseURL, let cookies = HTTPCookieStorage.shared.cookies(for: url) {
             cookies.forEach(HTTPCookieStorage.shared.deleteCookie)
         }
@@ -177,6 +180,21 @@ final class FrigateClient {
         if camera == nil { hasEvents = found }
         return found
     }
+
+    /// Reads which cameras are offline. Frigate reports 0 frames per second for a
+    /// camera whose stream has dropped.
+    func refreshCameraStatus() async throws {
+        struct Stats: Decodable {
+            struct Camera: Decodable { let camera_fps: Double? }
+            let cameras: [String: Camera]
+        }
+        let data = try await data(from: url("api/stats"))
+        let stats = try JSONDecoder().decode(Stats.self, from: data)
+        let offline = Set(stats.cameras.filter { ($0.value.camera_fps ?? 0) <= 0 }.keys)
+        if offline != offlineCameras { offlineCameras = offline }
+    }
+
+    func isOffline(_ camera: String) -> Bool { offlineCameras.contains(camera) }
 
     func labels() async throws -> [String] {
         let data = try await data(from: url("api/labels"))

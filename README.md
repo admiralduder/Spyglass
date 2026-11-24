@@ -22,7 +22,7 @@ Spyglass is an independent project and is not affiliated with Frigate.
 
 ## Requirements
 
-- iOS 17 or later. On iOS 26, the tab bar shrinks while you scroll.
+- iOS 17 or later.
 - Xcode 26 or later to build.
 - A Frigate server (tested with Frigate 0.18).
 

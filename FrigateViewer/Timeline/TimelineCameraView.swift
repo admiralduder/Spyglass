@@ -10,13 +10,18 @@ struct TimelineCameraView: View {
 
     @State private var model: TimelineModel?
     @State private var showDatePicker = false
+    @State private var showFullScreen = false
+    @State private var showFullScreenDatePicker = false
 
     var body: some View {
         VStack(spacing: 0) {
             if let model {
-                VideoArea(model: model, aspectRatio: aspectRatio)
+                VideoArea(model: model, aspectRatio: aspectRatio) { showFullScreen = true }
                 ControlBar(model: model, showDatePicker: $showDatePicker)
-                Divider()
+                    // A darker frosted panel between the video and the timeline.
+                    .glassCard(cornerRadius: 22, tint: Color(.systemGray3).opacity(0.35))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                 TimelineStrip(model: model)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -28,13 +33,26 @@ struct TimelineCameraView: View {
         .sheet(isPresented: $showDatePicker) {
             if let model { JumpToDateSheet(model: model) }
         }
+        .fullScreenCover(isPresented: $showFullScreen) {
+            if let model {
+                FullScreenCamera {
+                    VideoArea(model: model, aspectRatio: aspectRatio, onFullScreen: nil)
+                } controls: {
+                    ControlBar(model: model, showDatePicker: $showFullScreenDatePicker)
+                        .glassCard(cornerRadius: 22)
+                        .frame(maxWidth: 560)
+                }
+                .sheet(isPresented: $showFullScreenDatePicker) { JumpToDateSheet(model: model) }
+            }
+        }
         .task {
             guard model == nil else { return }
             let m = TimelineModel(camera: name, client: client)
             model = m
             await m.start()
         }
-        .onDisappear { model?.stop() }
+        // Full screen covers this view; only stop when actually leaving the camera.
+        .onDisappear { if !showFullScreen { model?.stop() } }
     }
 }
 
@@ -44,6 +62,8 @@ private struct VideoArea: View {
     @Environment(FrigateClient.self) private var client
     let model: TimelineModel
     let aspectRatio: CGFloat
+    /// Shows the full-screen button when set.
+    var onFullScreen: (() -> Void)?
 
     var body: some View {
         ZStack {
@@ -72,6 +92,9 @@ private struct VideoArea: View {
         .aspectRatio(aspectRatio, contentMode: .fit)
         .frame(maxWidth: .infinity)
         .overlay(alignment: .topLeading) { badge.padding(10) }
+        .overlay(alignment: .bottomTrailing) {
+            if let onFullScreen { FullScreenButton(action: onFullScreen).padding(10) }
+        }
     }
 
     private var noRecording: some View {
@@ -84,7 +107,9 @@ private struct VideoArea: View {
     }
 
     @ViewBuilder private var badge: some View {
-        if model.mode == .live {
+        if model.mode == .live && client.isOffline(model.camera) {
+            LiveBadge(isOffline: true)
+        } else if model.mode == .live {
             Label(model.isLivePaused ? "PAUSED" : "LIVE",
                   systemImage: model.isLivePaused ? "pause.fill" : "dot.radiowaves.left.and.right")
                 .font(.caption.bold())
@@ -145,6 +170,8 @@ private struct ControlBar: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Text(Date(timeIntervalSince1970: model.centerTime), format: .dateTime.hour().minute().second())
                     .font(.headline.monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize()
             }
             Spacer(minLength: 0)
 
@@ -163,6 +190,7 @@ private struct ControlBar: View {
 
             Button { model.goLive() } label: {
                 Text("LIVE").font(.caption.bold())
+                    .fixedSize()
                     .padding(.horizontal, 10).padding(.vertical, 5)
                     .background(isLiveNow ? Color.red : Color.secondary.opacity(0.2), in: Capsule())
                     .foregroundStyle(isLiveNow ? .white : .primary)

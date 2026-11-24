@@ -9,8 +9,13 @@ struct RemoteImage: View {
     let makeURL: () throws -> URL
     var refreshInterval: Duration? = nil
     var contentMode: ContentMode = .fit
+    /// When set, the last picture is remembered, so a view that is rebuilt
+    /// (for example when scrolling back up a list) shows it right away.
+    var cacheKey: String? = nil
 
     @State private var image: UIImage?
+
+    private static let cache = NSCache<NSString, UIImage>()
     @State private var error: String?
 
     var body: some View {
@@ -31,6 +36,9 @@ struct RemoteImage: View {
             }
         }
         .task {
+            if image == nil, let cacheKey, let cached = Self.cache.object(forKey: cacheKey as NSString) {
+                image = cached
+            }
             await load()
             guard let refreshInterval else { return }
             while !Task.isCancelled {
@@ -46,6 +54,7 @@ struct RemoteImage: View {
             if let img = UIImage(data: data) {
                 image = img
                 error = nil
+                if let cacheKey { Self.cache.setObject(img, forKey: cacheKey as NSString) }
             }
         } catch is CancellationError {
         } catch let e as URLError where e.code == .cancelled {

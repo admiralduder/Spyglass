@@ -75,11 +75,21 @@ private struct CameraTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            RemoteImage(makeURL: { try client.latestFrameURL(camera: name, height: 360) },
-                        refreshInterval: .seconds(10), contentMode: .fill)
+            // The tile's size comes from the camera's shape alone, never from the picture,
+            // so tiles don't change height while pictures load (which made the list jump).
+            Color.black
                 .aspectRatio(aspectRatio, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .background(Color.black)
+                .overlay {
+                    RemoteImage(makeURL: { try client.latestFrameURL(camera: name, height: 360) },
+                                refreshInterval: .seconds(10), contentMode: .fill,
+                                cacheKey: "tile:\(name)")
+                }
+                .overlay(alignment: .topLeading) {
+                    if client.isOffline(name) {
+                        LiveBadge(isOffline: true).padding(8)
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 6) {
                 Text(name.prettyName)
@@ -95,11 +105,26 @@ private struct CameraTile: View {
     }
 }
 
+/// "LIVE" in red, or "OFFLINE" in gray when the camera isn't sending video.
+struct LiveBadge: View {
+    let isOffline: Bool
+
+    var body: some View {
+        Label(isOffline ? "OFFLINE" : "LIVE",
+              systemImage: isOffline ? "video.slash.fill" : "dot.radiowaves.left.and.right")
+            .font(.caption.bold())
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(isOffline ? Color.black.opacity(0.55) : Color.red, in: Capsule())
+            .foregroundStyle(.white)
+    }
+}
+
 struct LiveCameraView: View {
     @Environment(FrigateClient.self) private var client
     let name: String
     let aspectRatio: CGFloat
     @State private var hasEvents = false
+    @State private var showFullScreen = false
 
     var body: some View {
         ScrollView {
@@ -110,12 +135,11 @@ struct LiveCameraView: View {
                         .aspectRatio(aspectRatio, contentMode: .fit)
                         .frame(maxWidth: .infinity)
                         .background(Color.black)
-                    Label("LIVE", systemImage: "dot.radiowaves.left.and.right")
-                        .font(.caption.bold())
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.red, in: Capsule())
-                        .foregroundStyle(.white)
+                    LiveBadge(isOffline: client.isOffline(name))
                         .padding(8)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    FullScreenButton { showFullScreen = true }.padding(8)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
@@ -130,5 +154,14 @@ struct LiveCameraView: View {
         .navigationTitle(name.prettyName)
         .navigationBarTitleDisplayMode(.inline)
         .task { hasEvents = (try? await client.anyEvents(camera: name)) ?? false }
+        .fullScreenCover(isPresented: $showFullScreen) {
+            FullScreenCamera {
+                RemoteImage(makeURL: { try client.latestFrameURL(camera: name, height: 1080) },
+                            refreshInterval: .seconds(1))
+                    .aspectRatio(aspectRatio, contentMode: .fit)
+            } controls: {
+                EmptyView()
+            }
+        }
     }
 }

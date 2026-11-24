@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var password = ""
     @State private var allowSelfSigned = false
     @State private var status: Status = .idle
+    @FocusState private var focused: Field?
+
+    enum Field { case url, username, password }
 
     enum Status: Equatable {
         case idle, testing, ok(String), failed(String)
@@ -22,14 +25,24 @@ struct SettingsView: View {
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($focused, equals: .url)
+                        .submitLabel(.next)
+                        .onSubmit { focused = .username }
                     TextField("Username (optional)", text: $username)
                         .textContentType(.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .focused($focused, equals: .username)
+                        .submitLabel(.next)
+                        .onSubmit { focused = .password }
                     SecureField("Password (optional)", text: $password)
                         .textContentType(.password)
+                        .focused($focused, equals: .password)
+                        .submitLabel(.go)
+                        .onSubmit { focused = nil; Task { await saveAndTest() } }
                     Toggle("Allow self-signed certificate", isOn: $allowSelfSigned)
                     Button {
+                        focused = nil
                         Task { await saveAndTest() }
                     } label: {
                         HStack {
@@ -66,9 +79,10 @@ struct SettingsView: View {
                     Section("Cameras") {
                         NavigationLink("Camera Order") { CameraOrderView() }
                     }
-                }
+                    }
             }
             .navigationTitle("Settings")
+            .scrollDismissesKeyboard(.interactively)
             .onAppear {
                 let s = client.settings
                 url = s.serverURL

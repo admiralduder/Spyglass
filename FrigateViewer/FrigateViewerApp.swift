@@ -42,27 +42,25 @@ struct RootView: View {
         }
         // Accent is black in light mode, white in dark mode, everywhere in the app.
         .tint(.primary)
-        .modifier(MinimizeTabBarOnScroll())
         .onAppear {
+            // Tapping outside a text field closes the keyboard, everywhere in the app.
+            DispatchQueue.main.async { KeyboardDismisser.shared.install() }
             if !client.settings.isConfigured { tab = 2 }
         }
         .task(id: client.settings.serverURL) {
             guard client.settings.isConfigured else { return }
             _ = try? await client.anyEvents()
         }
+        // Keep camera online/offline status current while the app is open.
+        .task(id: client.settings.serverURL) {
+            guard client.settings.isConfigured else { return }
+            while !Task.isCancelled {
+                try? await client.refreshCameraStatus()
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
         .onChange(of: client.hasEvents) { _, has in
             if has != true && tab == 1 { tab = 0 }
-        }
-    }
-}
-
-/// Shrinks the tab bar into a small button while scrolling down (iOS 26 and later).
-private struct MinimizeTabBarOnScroll: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.tabBarMinimizeBehavior(.onScrollDown)
-        } else {
-            content
         }
     }
 }

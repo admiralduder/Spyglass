@@ -1,0 +1,87 @@
+import SwiftUI
+import UIKit
+
+/// Black full-screen viewer for a camera. Turns the phone to landscape when it opens
+/// and back to portrait when it closes; you can still rotate it yourself.
+/// Tap the picture to show or hide the controls.
+struct FullScreenCamera<Content: View, Controls: View>: View {
+    @Environment(\.dismiss) private var dismiss
+    @ViewBuilder var content: () -> Content
+    @ViewBuilder var controls: () -> Controls
+
+    @State private var showsControls = true
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showsControls.toggle() } }
+
+            if showsControls {
+                VStack(spacing: 0) {
+                    HStack {
+                        Spacer()
+                        Button { dismiss() } label: {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.body.weight(.semibold))
+                                .frame(width: 40, height: 40)
+                                .background(.black.opacity(0.55), in: Circle())
+                                .foregroundStyle(.white)
+                        }
+                        .accessibilityLabel("Exit Full Screen")
+                    }
+                    Spacer()
+                    controls()
+                }
+                .padding()
+                .transition(.opacity)
+            }
+        }
+        // Controls are always light-on-dark here, whatever the app's appearance.
+        .environment(\.colorScheme, .dark)
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
+        .task {
+            // While the cover is still animating in, iOS only allows portrait,
+            // so keep asking until the phone has turned (or give up after a few tries).
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Orientation.isLandscape { break }
+                Orientation.request(.landscapeRight)
+            }
+        }
+        .onDisappear { Orientation.request(.portrait) }
+    }
+}
+
+/// The small button in the corner of a camera picture that opens full screen.
+struct FullScreenButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 34, height: 34)
+                .background(.black.opacity(0.55), in: Circle())
+                .foregroundStyle(.white)
+        }
+        .accessibilityLabel("Full Screen")
+    }
+}
+
+@MainActor
+enum Orientation {
+    private static var scene: UIWindowScene? {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    }
+
+    static var isLandscape: Bool { scene?.effectiveGeometry.interfaceOrientation.isLandscape ?? false }
+
+    static func request(_ mask: UIInterfaceOrientationMask) {
+        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+    }
+}
