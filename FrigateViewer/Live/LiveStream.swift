@@ -170,6 +170,13 @@ final class LiveStream: NSObject {
                 guard let peer else { return }
                 do {
                     try await peer.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: value))
+                    // Pick up the tracks the server agreed to send. (WebRTC's "track added"
+                    // callback doesn't always fire for audio.)
+                    let sending = Self.mediaKindsServerSends(answer: value)
+                    for transceiver in peer.transceivers {
+                        let kind = transceiver.mediaType == .audio ? "audio" : "video"
+                        if sending.contains(kind), let track = transceiver.receiver.track { didReceive(track: track) }
+                    }
                     await addServerCandidates(to: peer)
                 } catch {
                     fail()
@@ -186,6 +193,17 @@ final class LiveStream: NSObject {
                 continue
             }
         }
+    }
+
+    /// The media kinds ("audio", "video") the server will actually send, read from its answer.
+    private static func mediaKindsServerSends(answer sdp: String) -> Set<String> {
+        var kinds = Set<String>()
+        for section in sdp.components(separatedBy: "\nm=").dropFirst() {
+            let kind = String(section.prefix { $0 != " " })
+            let isInactive = section.contains("a=inactive") || section.contains("a=recvonly")
+            if !isInactive && !section.hasPrefix("\(kind) 0 ") { kinds.insert(kind) }
+        }
+        return kinds
     }
 
     /// go2rtc running in Docker often only reports its internal address, which the phone
@@ -236,7 +254,7 @@ final class LiveStream: NSObject {
             }
             frameWatcher = watcher
             video.add(watcher)
-        } else if let audio = track as? RTCAudioTrack {
+        } else if let audio = track as? RTCAudioTrack, audioTrack !== audio {
             audioTrack = audio
             hasAudio = true
             audio.isEnabled = !isMuted
