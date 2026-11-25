@@ -119,49 +119,71 @@ struct LiveBadge: View {
     }
 }
 
+/// Camera screen for cameras that don't record: live video on top with the same
+/// controls bar as recorded cameras, then recent events (if any).
 struct LiveCameraView: View {
     @Environment(FrigateClient.self) private var client
     let name: String
     let aspectRatio: CGFloat
+    @State private var stream: LiveStream?
     @State private var hasEvents = false
     @State private var showFullScreen = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                ZStack(alignment: .topLeading) {
-                    RemoteImage(makeURL: { try client.latestFrameURL(camera: name, height: 1080) },
-                                refreshInterval: .seconds(1))
-                        .aspectRatio(aspectRatio, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.black)
-                    LiveBadge(isOffline: client.isOffline(name))
-                        .padding(8)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    FullScreenButton { showFullScreen = true }.padding(8)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-
+        VStack(spacing: 0) {
+            if let stream {
+                video(stream)
+                    .overlay(alignment: .bottomTrailing) {
+                        FullScreenButton { showFullScreen = true }.padding(10)
+                    }
+                LiveControlBar(stream: stream, isOffline: client.isOffline(name))
+                    .glassCard(cornerRadius: 22, tint: Color(.systemGray3).opacity(0.35))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+            }
+            ScrollView {
                 // Only shown when this camera has events (detection may be turned off).
                 if hasEvents {
-                    Text("Recent Events").font(.headline)
-                    EventList(camera: name, limit: 20, embedded: true)
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Recent Events").font(.headline)
+                        EventList(camera: name, limit: 20, embedded: true)
+                    }
+                    .padding()
                 }
             }
-            .padding()
         }
         .navigationTitle(name.prettyName)
         .navigationBarTitleDisplayMode(.inline)
         .task { hasEvents = (try? await client.anyEvents(camera: name)) ?? false }
+        .onAppear {
+            if stream == nil { stream = LiveStream(camera: name, client: client) }
+            stream?.start()
+        }
+        // Full screen covers this view; keep streaming until actually leaving the camera.
+        .onDisappear { if !showFullScreen { stream?.stop() } }
+        // A camera coming back online gets another try at live video.
+        .onChange(of: client.isOffline(name)) { _, offline in
+            if !offline, stream?.state == .failed { stream?.retry() }
+        }
         .fullScreenCover(isPresented: $showFullScreen) {
-            FullScreenCamera {
-                RemoteImage(makeURL: { try client.latestFrameURL(camera: name, height: 1080) },
-                            refreshInterval: .seconds(1))
-                    .aspectRatio(aspectRatio, contentMode: .fit)
-            } controls: {
-                EmptyView()
+            if let stream {
+                FullScreenCamera {
+                    video(stream)
+                } controls: {
+                    LiveControlBar(stream: stream, isOffline: client.isOffline(name))
+                        .glassCard(cornerRadius: 22)
+                        .frame(maxWidth: 560)
+                }
             }
         }
+    }
+
+    private func video(_ stream: LiveStream) -> some View {
+        LiveVideoView(stream: stream)
+            .aspectRatio(aspectRatio, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .topLeading) {
+                LiveBadge(isOffline: client.isOffline(name)).padding(10)
+            }
     }
 }

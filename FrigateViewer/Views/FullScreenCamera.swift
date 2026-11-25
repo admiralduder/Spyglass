@@ -1,8 +1,7 @@
 import SwiftUI
-import UIKit
 
-/// Black full-screen viewer for a camera. Turns the phone to landscape when it opens
-/// and back to portrait when it closes; you can still rotate it yourself.
+/// Black full-screen viewer for a camera. It stays in whatever orientation the phone
+/// is in; turn the phone to watch in landscape.
 /// Tap the picture to show or hide the controls.
 struct FullScreenCamera<Content: View, Controls: View>: View {
     @Environment(\.dismiss) private var dismiss
@@ -44,16 +43,6 @@ struct FullScreenCamera<Content: View, Controls: View>: View {
         .environment(\.colorScheme, .dark)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
-        .task {
-            // While the cover is still animating in, iOS only allows portrait,
-            // so keep asking until the phone has turned (or give up after a few tries).
-            for _ in 0..<8 {
-                try? await Task.sleep(for: .milliseconds(250))
-                if Orientation.isLandscape { break }
-                Orientation.request(.landscapeRight)
-            }
-        }
-        .onDisappear { Orientation.request(.portrait) }
     }
 }
 
@@ -70,18 +59,5 @@ struct FullScreenButton: View {
                 .foregroundStyle(.white)
         }
         .accessibilityLabel("Full Screen")
-    }
-}
-
-@MainActor
-enum Orientation {
-    private static var scene: UIWindowScene? {
-        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-    }
-
-    static var isLandscape: Bool { scene?.effectiveGeometry.interfaceOrientation.isLandscape ?? false }
-
-    static func request(_ mask: UIInterfaceOrientationMask) {
-        scene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
     }
 }

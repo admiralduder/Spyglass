@@ -8,6 +8,12 @@ struct FrigateConfig: Decodable {
         let enabled: Bool?
         let detect: Detect?
         let record: Record?
+        let live: Live?
+
+        struct Live: Decodable {
+            /// Display name → go2rtc stream name.
+            let streams: [String: String]?
+        }
 
         struct Detect: Decodable {
             let width: Int?
@@ -21,6 +27,12 @@ struct FrigateConfig: Decodable {
 
     func isRecording(_ camera: String) -> Bool {
         cameras[camera]?.record?.enabled ?? false
+    }
+
+    /// The go2rtc stream used for live video. Defaults to the camera's own name.
+    func liveStreamName(for camera: String) -> String {
+        let streams = cameras[camera]?.live?.streams ?? [:]
+        return streams.sorted { $0.key < $1.key }.first?.value ?? camera
     }
 
     /// Camera names sorted alphabetically, skipping disabled cameras.

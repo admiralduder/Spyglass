@@ -12,11 +12,15 @@ struct TimelineCameraView: View {
     @State private var showDatePicker = false
     @State private var showFullScreen = false
     @State private var showFullScreenDatePicker = false
+    @State private var stream: LiveStream?
+    /// Whether this screen (or its full-screen view) is showing.
+    @State private var isOnScreen = false
+    @State private var isStreaming = false
 
     var body: some View {
         VStack(spacing: 0) {
             if let model {
-                VideoArea(model: model, aspectRatio: aspectRatio) { showFullScreen = true }
+                VideoArea(model: model, stream: stream, aspectRatio: aspectRatio) { showFullScreen = true }
                 ControlBar(model: model, showDatePicker: $showDatePicker)
                     // A darker frosted panel between the video and the timeline.
                     .glassCard(cornerRadius: 22, tint: Color(.systemGray3).opacity(0.35))
@@ -36,7 +40,7 @@ struct TimelineCameraView: View {
         .fullScreenCover(isPresented: $showFullScreen) {
             if let model {
                 FullScreenCamera {
-                    VideoArea(model: model, aspectRatio: aspectRatio, onFullScreen: nil)
+                    VideoArea(model: model, stream: stream, aspectRatio: aspectRatio, onFullScreen: nil)
                 } controls: {
                     ControlBar(model: model, showDatePicker: $showFullScreenDatePicker)
                         .glassCard(cornerRadius: 22)
@@ -49,10 +53,36 @@ struct TimelineCameraView: View {
             guard model == nil else { return }
             let m = TimelineModel(camera: name, client: client)
             model = m
+            stream = LiveStream(camera: name, client: client)
+            syncLive()
             await m.start()
         }
+        .onAppear { isOnScreen = true; syncLive() }
         // Full screen covers this view; only stop when actually leaving the camera.
-        .onDisappear { if !showFullScreen { model?.stop() } }
+        .onDisappear {
+            guard !showFullScreen else { return }
+            isOnScreen = false
+            syncLive()
+            model?.stop()
+        }
+        // Live video streams only while watching live, not recordings.
+        .onChange(of: model?.mode) { syncLive() }
+        .onChange(of: model?.isLivePaused) { syncLive() }
+        .onChange(of: model?.isMuted) { stream?.setMuted(model?.isMuted ?? true) }
+        .onChange(of: client.isOffline(name)) { _, offline in
+            if !offline, stream?.state == .failed { stream?.retry() }
+        }
+    }
+}
+
+extension TimelineCameraView {
+    private func syncLive() {
+        guard let model, let stream else { return }
+        let want = isOnScreen && model.mode == .live && !model.isLivePaused
+        stream.setMuted(model.isMuted)
+        guard want != isStreaming else { return }
+        isStreaming = want
+        if want { stream.start() } else { stream.stop() }
     }
 }
 
@@ -61,6 +91,7 @@ struct TimelineCameraView: View {
 private struct VideoArea: View {
     @Environment(FrigateClient.self) private var client
     let model: TimelineModel
+    let stream: LiveStream?
     let aspectRatio: CGFloat
     /// Shows the full-screen button when set.
     var onFullScreen: (() -> Void)?
@@ -70,10 +101,10 @@ private struct VideoArea: View {
             Color.black
             switch model.mode {
             case .live:
-                // When paused, the view reloads once and then stops refreshing (a frozen frame).
-                RemoteImage(makeURL: { [camera = model.camera] in try client.latestFrameURL(camera: camera, height: 720) },
-                            refreshInterval: model.isLivePaused ? nil : .seconds(1))
-                    .id(model.isLivePaused)
+                if let stream {
+                    // When paused, shows a single frozen picture instead of video.
+                    LiveVideoView(stream: stream, isPaused: model.isLivePaused)
+                }
             case .scrubbing:
                 if model.recordedRange(containing: model.centerTime) == nil {
                     noRecording

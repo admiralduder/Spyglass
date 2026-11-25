@@ -9,7 +9,8 @@ Spyglass is an independent project and is not affiliated with Frigate.
 ## Features
 
 - **Camera grid** with live snapshots of every camera. A red dot marks cameras that record continuously.
-- **Live view** for each camera.
+- **Live video** over WebRTC from Frigate's built-in go2rtc, with sound when the camera's audio is Opus or PCM. Falls back to refreshed pictures if WebRTC can't connect.
+- **Full screen** for any camera, in portrait or landscape.
 - **Recordings timeline** for continuously recording cameras:
   - Drag to scrub through footage, with momentum.
   - Pinch or use the + and − buttons to zoom.
@@ -39,6 +40,24 @@ Spyglass is an independent project and is not affiliated with Frigate.
 - **Port 8971** is the authenticated port. Enter your Frigate username and password. Turn on **Allow self-signed certificate** if your server uses Frigate's default certificate.
 
 Your password is stored in the iOS Keychain. Server settings never leave your device except to talk to your Frigate server.
+
+### Live video
+
+Live video uses WebRTC. The app signals through Frigate's normal port and receives video from go2rtc on port 8555 (TCP and UDP), so that port must be reachable from your phone.
+
+WebRTC can't carry AAC audio. To hear a camera live, have go2rtc convert its audio to Opus in your Frigate config:
+
+```yaml
+go2rtc:
+  streams:
+    front_door:
+      - rtsp://user:pass@camera-ip/stream
+      - "ffmpeg:front_door#audio=opus"
+```
+
+## Third-party code
+
+- [WebRTC](https://github.com/stasel/WebRTC) (BSD license), Google's WebRTC built for Apple platforms.
 
 ## License
 

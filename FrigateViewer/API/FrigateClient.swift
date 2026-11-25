@@ -93,6 +93,17 @@ final class FrigateClient {
         ])
     }
 
+    /// Opens a WebSocket to the server (for example go2rtc's WebRTC signaling),
+    /// using the same login cookie and certificate trust as every other request.
+    func webSocket(path: String, query: [URLQueryItem] = []) async throws -> URLSessionWebSocketTask {
+        try await ensureLoggedIn()
+        var comps = URLComponents(url: try url(path, query: query), resolvingAgainstBaseURL: false)!
+        comps.scheme = comps.scheme == "https" ? "wss" : "ws"
+        let task = session.webSocketTask(with: comps.url!)
+        task.maximumMessageSize = 4 * 1024 * 1024
+        return task
+    }
+
     func thumbnailURL(event: FrigateEvent) throws -> URL {
         try url("api/events/\(event.id)/thumbnail.jpg")
     }
