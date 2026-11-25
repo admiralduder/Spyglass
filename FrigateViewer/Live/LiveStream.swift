@@ -21,14 +21,22 @@ final class LiveStream: NSObject {
     private(set) var hasAudio = false
     /// Streams start muted.
     private(set) var isMuted = true
+    /// True while video has started but no new frame has arrived for a moment.
+    private(set) var isStalled = false
+    /// True only while video frames are actually arriving.
+    var isStreaming: Bool { hasVideo && !isStalled }
+
+    /// How long without a new frame before the video counts as stalled.
+    private static let stallDelay: TimeInterval = 2
 
     @ObservationIgnored private let client: FrigateClient
     @ObservationIgnored private var peer: RTCPeerConnection?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     @ObservationIgnored private var audioTrack: RTCAudioTrack?
-    @ObservationIgnored private var frameWatcher: FirstFrameWatcher?
+    @ObservationIgnored private var frameWatcher: FrameWatcher?
     @ObservationIgnored private var receiveTask: Task<Void, Never>?
     @ObservationIgnored private var timeoutTask: Task<Void, Never>?
+    @ObservationIgnored private var stallTask: Task<Void, Never>?
     @ObservationIgnored private var users = 0
 
     private static let factory: RTCPeerConnectionFactory = {
@@ -125,6 +133,8 @@ final class LiveStream: NSObject {
 
     private func disconnect() {
         timeoutTask?.cancel()
+        stallTask?.cancel()
+        isStalled = false
         receiveTask?.cancel()
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
@@ -244,12 +254,13 @@ final class LiveStream: NSObject {
     fileprivate func didReceive(track: RTCMediaStreamTrack) {
         if let video = track as? RTCVideoTrack, videoTrack == nil {
             videoTrack = video
-            let watcher = FirstFrameWatcher { [weak self] in
+            let watcher = FrameWatcher { [weak self] in
                 Task { @MainActor in
                     guard let self, !self.hasVideo else { return }
                     self.hasVideo = true
                     self.state = .playing
                     self.timeoutTask?.cancel()
+                    self.watchForStalls()
                 }
             }
             frameWatcher = watcher
@@ -259,6 +270,19 @@ final class LiveStream: NSObject {
             hasAudio = true
             audio.isEnabled = !isMuted
             PlayoutAudioDevice.shared.setSoundOn(!isMuted)
+        }
+    }
+
+    /// Checks a few times a second whether frames are still arriving.
+    private func watchForStalls() {
+        stallTask?.cancel()
+        stallTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, let watcher = self.frameWatcher, !Task.isCancelled else { return }
+                let stalled = watcher.secondsSinceLastFrame > Self.stallDelay
+                if stalled != self.isStalled { self.isStalled = stalled }
+            }
         }
     }
 
@@ -297,18 +321,30 @@ extension LiveStream: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
 }
 
-/// Reports the first decoded video frame.
-private final class FirstFrameWatcher: NSObject, RTCVideoRenderer {
+/// Reports the first decoded video frame, and remembers when the latest one arrived.
+/// WebRTC calls `renderFrame` on its own thread.
+private final class FrameWatcher: NSObject, RTCVideoRenderer, @unchecked Sendable {
+    private let lock = NSLock()
     private var fired = false
+    private var lastFrame = Date.distantPast
     private let onFirstFrame: () -> Void
 
     init(onFirstFrame: @escaping () -> Void) { self.onFirstFrame = onFirstFrame }
 
+    var secondsSinceLastFrame: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Date().timeIntervalSince(lastFrame)
+    }
+
     func setSize(_ size: CGSize) {}
 
     func renderFrame(_ frame: RTCVideoFrame?) {
-        guard frame != nil, !fired else { return }
+        guard frame != nil else { return }
+        lock.lock()
+        lastFrame = Date()
+        let isFirst = !fired
         fired = true
-        onFirstFrame()
+        lock.unlock()
+        if isFirst { onFirstFrame() }
     }
 }

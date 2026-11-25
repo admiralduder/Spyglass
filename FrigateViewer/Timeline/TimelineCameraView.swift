@@ -21,7 +21,7 @@ struct TimelineCameraView: View {
         VStack(spacing: 0) {
             if let model {
                 VideoArea(model: model, stream: stream, aspectRatio: aspectRatio) { showFullScreen = true }
-                ControlBar(model: model, showDatePicker: $showDatePicker)
+                ControlBar(model: model, stream: stream, showDatePicker: $showDatePicker)
                     // A darker frosted panel between the video and the timeline.
                     .glassCard(cornerRadius: 22, tint: Color(.systemGray3).opacity(0.35))
                     .padding(.horizontal, 10)
@@ -42,7 +42,7 @@ struct TimelineCameraView: View {
                 FullScreenCamera {
                     VideoArea(model: model, stream: stream, aspectRatio: aspectRatio, onFullScreen: nil)
                 } controls: {
-                    ControlBar(model: model, showDatePicker: $showFullScreenDatePicker)
+                    ControlBar(model: model, stream: stream, showDatePicker: $showFullScreenDatePicker)
                         .glassCard(cornerRadius: 22)
                         .frame(maxWidth: 560)
                 }
@@ -141,11 +141,13 @@ private struct VideoArea: View {
         if model.mode == .live && client.isOffline(model.camera) {
             LiveBadge(isOffline: true)
         } else if model.mode == .live {
+            // Red only while video is actually streaming; gray while connecting or stalled.
+            let isRed = !model.isLivePaused && stream?.isStreaming == true
             Label(model.isLivePaused ? "PAUSED" : "LIVE",
                   systemImage: model.isLivePaused ? "pause.fill" : "dot.radiowaves.left.and.right")
                 .font(.caption.bold())
                 .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(model.isLivePaused ? Color.black.opacity(0.55) : Color.red, in: Capsule())
+                .background(isRed ? Color.red : Color.black.opacity(0.55), in: Capsule())
                 .foregroundStyle(.white)
         } else {
             Text(Date(timeIntervalSince1970: model.centerTime), format: .dateTime.hour().minute().second())
@@ -182,9 +184,12 @@ struct PlayerLayerView: UIViewRepresentable {
 
 private struct ControlBar: View {
     let model: TimelineModel
+    let stream: LiveStream?
     @Binding var showDatePicker: Bool
 
     private var isLiveNow: Bool { model.mode == .live && !model.isLivePaused }
+    /// The LIVE pill is red only while live video is actually streaming.
+    private var isLiveRed: Bool { isLiveNow && stream?.isStreaming == true }
 
     private var showsPause: Bool {
         switch model.mode {
@@ -223,8 +228,8 @@ private struct ControlBar: View {
                 Text("LIVE").font(.caption.bold())
                     .fixedSize()
                     .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(isLiveNow ? Color.red : Color.secondary.opacity(0.2), in: Capsule())
-                    .foregroundStyle(isLiveNow ? .white : .primary)
+                    .background(isLiveRed ? Color.red : Color.secondary.opacity(0.2), in: Capsule())
+                    .foregroundStyle(isLiveRed ? .white : .primary)
             }
             .disabled(isLiveNow)
         }

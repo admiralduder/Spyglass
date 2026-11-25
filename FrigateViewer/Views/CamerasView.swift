@@ -105,16 +105,20 @@ private struct CameraTile: View {
     }
 }
 
-/// "LIVE" in red, or "OFFLINE" in gray when the camera isn't sending video.
+/// "LIVE" in red while video is streaming, gray while it's connecting or stalled,
+/// or "OFFLINE" in gray when the camera isn't sending video.
 struct LiveBadge: View {
     let isOffline: Bool
+    var isStreaming = true
+
+    private var isRed: Bool { !isOffline && isStreaming }
 
     var body: some View {
         Label(isOffline ? "OFFLINE" : "LIVE",
               systemImage: isOffline ? "video.slash.fill" : "dot.radiowaves.left.and.right")
             .font(.caption.bold())
             .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(isOffline ? Color.black.opacity(0.55) : Color.red, in: Capsule())
+            .background(isRed ? Color.red : Color.black.opacity(0.55), in: Capsule())
             .foregroundStyle(.white)
     }
 }
@@ -183,7 +187,7 @@ struct LiveCameraView: View {
             .aspectRatio(aspectRatio, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .overlay(alignment: .topLeading) {
-                LiveBadge(isOffline: client.isOffline(name)).padding(10)
+                LiveBadge(isOffline: client.isOffline(name), isStreaming: stream.isStreaming).padding(10)
             }
     }
 }

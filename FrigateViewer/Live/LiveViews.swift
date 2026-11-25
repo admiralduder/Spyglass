@@ -82,11 +82,13 @@ struct LiveControlBar: View {
             // Grayed out when live video is playing but the camera has no sound to send.
             .disabled(stream.hasVideo && !stream.hasAudio)
 
+            // Red only while video is actually streaming; gray while connecting or stalled.
+            let isRed = !isOffline && stream.isStreaming
             Text(isOffline ? "OFFLINE" : "LIVE").font(.caption.bold())
                 .fixedSize()
                 .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(isOffline ? Color.secondary.opacity(0.2) : Color.red, in: Capsule())
-                .foregroundStyle(isOffline ? Color.primary : Color.white)
+                .background(isRed ? Color.red : Color.secondary.opacity(0.2), in: Capsule())
+                .foregroundStyle(isRed ? Color.white : Color.primary)
         }
         .font(.title3)
         .tint(.primary)
