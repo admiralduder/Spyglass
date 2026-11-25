@@ -2,13 +2,15 @@ import SwiftUI
 
 /// Black full-screen viewer for a camera. It stays in whatever orientation the phone
 /// is in; turn the phone to watch in landscape.
-/// Tap the picture to show or hide the controls.
+/// Tap the picture to show or hide the controls; pinch to zoom.
 struct FullScreenCamera<Content: View, Controls: View>: View {
     @Environment(\.dismiss) private var dismiss
     @ViewBuilder var content: () -> Content
     @ViewBuilder var controls: () -> Controls
 
     @State private var showsControls = true
+    /// Zoomed video fills the whole screen, not just the video's own area.
+    @State private var zoom = ZoomModel()
 
     var body: some View {
         ZStack {
@@ -16,7 +18,8 @@ struct FullScreenCamera<Content: View, Controls: View>: View {
 
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+                .zoomViewport(zoom)
+                .ignoresSafeArea()
                 .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showsControls.toggle() } }
 
             if showsControls {

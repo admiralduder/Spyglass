@@ -184,10 +184,12 @@ struct LiveCameraView: View {
 
     private func video(_ stream: LiveStream) -> some View {
         LiveVideoView(stream: stream)
+            .pinchToZoom()
             .aspectRatio(aspectRatio, contentMode: .fit)
-            .frame(maxWidth: .infinity)
+            // The badge sits on the video itself, even when it's narrower than the screen.
             .overlay(alignment: .topLeading) {
                 LiveBadge(isOffline: client.isOffline(name), isStreaming: stream.isStreaming).padding(10)
             }
+            .frame(maxWidth: .infinity)
     }
 }

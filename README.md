@@ -11,6 +11,7 @@ Spyglass is an independent project and is not affiliated with Frigate.
 - **Camera grid** with live snapshots of every camera. A red dot marks cameras that record continuously.
 - **Live video** over WebRTC from Frigate's built-in go2rtc, with sound when the camera's audio is Opus or PCM. Falls back to refreshed pictures if WebRTC can't connect.
 - **Full screen** for any camera, in portrait or landscape.
+- **Pinch to zoom** on live and recorded video. Drag to look around while zoomed, and double-tap to zoom in or back out.
 - **Recordings timeline** for continuously recording cameras:
   - Drag to scrub through footage, with momentum.
   - Pinch or use the + and − buttons to zoom.

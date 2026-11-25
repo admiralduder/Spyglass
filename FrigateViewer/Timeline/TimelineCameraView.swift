@@ -99,6 +99,19 @@ private struct VideoArea: View {
     var body: some View {
         ZStack {
             Color.black
+            Group { media }.pinchToZoom()
+        }
+        .aspectRatio(aspectRatio, contentMode: .fit)
+        // Badges sit on the video itself, even when it's narrower than the screen.
+        .overlay(alignment: .topLeading) { badge.padding(10) }
+        .overlay(alignment: .bottomTrailing) {
+            if let onFullScreen { FullScreenButton(action: onFullScreen).padding(10) }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder private var media: some View {
+        ZStack {
             switch model.mode {
             case .live:
                 if let stream {
@@ -119,12 +132,6 @@ private struct VideoArea: View {
                     ProgressView().tint(.white)
                 }
             }
-        }
-        .aspectRatio(aspectRatio, contentMode: .fit)
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .topLeading) { badge.padding(10) }
-        .overlay(alignment: .bottomTrailing) {
-            if let onFullScreen { FullScreenButton(action: onFullScreen).padding(10) }
         }
     }
 
