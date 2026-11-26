@@ -12,6 +12,14 @@ struct RecordingRange: Hashable {
 private struct RecordingSegment: Decodable {
     let start_time: Double
     let end_time: Double
+    /// How much motion Frigate saw in the segment; 0 when there was none.
+    let motion: Int?
+}
+
+/// A day's recordings and the parts of them with motion.
+struct RecordingSpans {
+    var ranges: [RecordingRange]
+    var motion: [RecordingRange]
 }
 
 private struct RecordingDaySummary: Decodable {
@@ -21,14 +29,18 @@ private struct RecordingDaySummary: Decodable {
 extension FrigateClient {
     /// Recorded ranges for a camera between two times. Frigate stores ~10 s segments;
     /// segments closer than `gapTolerance` are merged into one range.
-    func recordingRanges(camera: String, after: Double, before: Double, gapTolerance: Double = 3) async throws -> [RecordingRange] {
+    /// Recorded ranges plus motion ranges. Motion segments less than `motionTolerance` apart
+    /// are merged, so one stretch of activity is one bar.
+    func recordingSpans(camera: String, after: Double, before: Double,
+                        motionTolerance: Double = 30) async throws -> RecordingSpans {
         let data = try await data(from: url("api/\(camera)/recordings", query: [
             URLQueryItem(name: "after", value: String(Int(after))),
             URLQueryItem(name: "before", value: String(Int(before))),
         ]))
         let segments = try JSONDecoder().decode([RecordingSegment].self, from: data)
-            .sorted { $0.start_time < $1.start_time }
-        return Self.merge(segments.map { RecordingRange(start: $0.start_time, end: $0.end_time) }, tolerance: gapTolerance)
+        let all = segments.map { RecordingRange(start: $0.start_time, end: $0.end_time) }
+        let moving = segments.filter { ($0.motion ?? 0) > 0 }.map { RecordingRange(start: $0.start_time, end: $0.end_time) }
+        return RecordingSpans(ranges: Self.merge(all), motion: Self.merge(moving, tolerance: motionTolerance))
     }
 
     static func merge(_ ranges: [RecordingRange], tolerance: Double = 3) -> [RecordingRange] {

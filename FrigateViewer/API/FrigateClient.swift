@@ -176,13 +176,33 @@ final class FrigateClient {
         return v
     }
 
-    func events(camera: String? = nil, label: String? = nil, before: Double? = nil, limit: Int = 50) async throws -> [FrigateEvent] {
-        var q = [URLQueryItem(name: "limit", value: String(limit))]
+    func events(camera: String? = nil, label: String? = nil, after: Double? = nil, before: Double? = nil,
+                limit: Int = 50) async throws -> [FrigateEvent] {
+        var q = [URLQueryItem(name: "limit", value: String(limit)),
+                 // Thumbnails are loaded separately, only for rows on screen.
+                 URLQueryItem(name: "include_thumbnails", value: "0")]
         if let camera { q.append(URLQueryItem(name: "cameras", value: camera)) }
         if let label { q.append(URLQueryItem(name: "labels", value: label)) }
+        if let after { q.append(URLQueryItem(name: "after", value: String(after))) }
         if let before { q.append(URLQueryItem(name: "before", value: String(before))) }
         let data = try await data(from: url("api/events", query: q))
         return try JSONDecoder().decode([FrigateEvent].self, from: data)
+    }
+
+    /// The local days that have at least one event for a camera.
+    func eventDays(camera: String) async throws -> [Date] {
+        struct DaySummary: Decodable { let day: String }
+        let data = try await data(from: url("api/events/summary", query: [
+            URLQueryItem(name: "cameras", value: camera),
+            // Group events into days in the phone's time zone.
+            URLQueryItem(name: "timezone", value: TimeZone.current.identifier),
+        ]))
+        let fmt = DateFormatter()
+        fmt.calendar = Calendar(identifier: .gregorian)
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        let days = try JSONDecoder().decode([DaySummary].self, from: data)
+        return Set(days.map(\.day)).compactMap { fmt.date(from: $0) }.sorted(by: >)
     }
 
     /// Checks whether the server (or one camera) has any events.

@@ -5,7 +5,8 @@ struct EventDetailView: View {
     @Environment(FrigateClient.self) private var client
     let event: FrigateEvent
 
-    @State private var player: AVPlayer?
+    @State private var playback: ClipPlayback?
+    @State private var showFullScreen = false
     @State private var clipFile: URL?
     @State private var loadingClip = false
     @State private var clipError: String?
@@ -19,14 +20,19 @@ struct EventDetailView: View {
                     .background(Color.black)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                if event.hasClip && player == nil {
+                if let playback {
+                    ClipControls(playback: playback)
+                        .glassCard(cornerRadius: 22)
+                } else if event.hasClip {
                     Button {
                         Task { await loadClip() }
                     } label: {
                         Label(loadingClip ? "Loading clip…" : "Play Clip", systemImage: "play.fill")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.primary)
+                    .glassButton()
                     .disabled(loadingClip)
                 }
                 if let clipError {
@@ -46,15 +52,32 @@ struct EventDetailView: View {
                 }
             }
         }
+        .fullScreenCover(isPresented: $showFullScreen) {
+            if let playback {
+                FullScreenCamera {
+                    PlayerLayerView(player: playback.player).pinchToZoom()
+                } controls: {
+                    ClipControls(playback: playback)
+                        .glassCard(cornerRadius: 22)
+                        .frame(maxWidth: 560)
+                }
+            }
+        }
         .onDisappear {
-            player?.pause()
+            // Full screen covers this view; only stop when actually leaving.
+            guard !showFullScreen else { return }
+            playback?.pause()
             if let clipFile { try? FileManager.default.removeItem(at: clipFile) }
         }
     }
 
     @ViewBuilder private var media: some View {
-        if let player {
-            VideoPlayer(player: player)
+        if let playback {
+            // Pinch to zoom; drag to move around while zoomed.
+            PlayerLayerView(player: playback.player).pinchToZoom()
+                .overlay(alignment: .bottomTrailing) {
+                    FullScreenButton { showFullScreen = true }.padding(8)
+                }
         } else if event.hasSnapshot {
             RemoteImage(makeURL: { try client.snapshotURL(event: event) })
         } else {
@@ -98,9 +121,9 @@ struct EventDetailView: View {
         do {
             let file = try await client.download(from: client.clipURL(event: event), fileExtension: "mp4")
             clipFile = file
-            let p = AVPlayer(url: file)
-            player = p
-            p.play()
+            let p = ClipPlayback(url: file)
+            playback = p
+            p.player.play()
             clipError = nil
         } catch {
             clipError = error.localizedDescription

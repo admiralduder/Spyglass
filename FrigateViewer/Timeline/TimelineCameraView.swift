@@ -16,6 +16,9 @@ struct TimelineCameraView: View {
     /// Whether this screen (or its full-screen view) is showing.
     @State private var isOnScreen = false
     @State private var isStreaming = false
+    /// Whether this camera has any events (detection may be off).
+    @State private var hasEvents = false
+    @AppStorage("showsEventList") private var showsEventList = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +29,15 @@ struct TimelineCameraView: View {
                     .glassCard(cornerRadius: 22, tint: Color(.systemGray3).opacity(0.35))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                TimelineStrip(model: model)
+                if hasEvents {
+                    DayHeader(model: model, showsList: $showsEventList)
+                    Divider()
+                }
+                if hasEvents && showsEventList {
+                    DayEventList(model: model)
+                } else {
+                    TimelineStrip(model: model)
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -55,7 +66,9 @@ struct TimelineCameraView: View {
             model = m
             stream = LiveStream(camera: name, client: client)
             syncLive()
+            async let checkEvents = client.anyEvents(camera: name)
             await m.start()
+            hasEvents = (try? await checkEvents) ?? false
         }
         .onAppear { isOnScreen = true; syncLive() }
         // Full screen covers this view; only stop when actually leaving the camera.
@@ -119,12 +132,23 @@ private struct VideoArea: View {
                     LiveVideoView(stream: stream, isPaused: model.isLivePaused)
                 }
             case .scrubbing:
-                if model.recordedRange(containing: model.centerTime) == nil {
+                if model.isKnownGap(model.centerTime) {
                     noRecording
                 } else if let image = model.previewImage {
                     Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
+                } else if model.scrubOrigin == .playback {
+                    // The paused recording, until the first scrub frame arrives.
+                    PlayerLayerView(player: model.player)
+                } else if let stream {
+                    // The last live picture, until the first scrub frame arrives.
+                    LiveVideoView(stream: stream, isPaused: true)
                 }
             case .playback:
+                // The last scrub frame stays underneath while the recording loads,
+                // so letting go doesn't flash black.
+                if let image = model.previewImage {
+                    Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
+                }
                 PlayerLayerView(player: model.player)
                 if let message = model.message {
                     Text(message).font(.callout).foregroundStyle(.white.opacity(0.8))
@@ -176,7 +200,8 @@ struct PlayerLayerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerUIView {
         let view = PlayerUIView()
-        view.backgroundColor = .black
+        // Clear, so a picture underneath shows until the video's first frame.
+        view.backgroundColor = .clear
         view.playerLayer.videoGravity = .resizeAspect
         view.playerLayer.player = player
         return view
@@ -208,14 +233,10 @@ private struct ControlBar: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(TimelineFormat.dayLabel(model.centerTime))
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(Date(timeIntervalSince1970: model.centerTime), format: .dateTime.hour().minute().second())
-                    .font(.headline.monospacedDigit())
-                    .lineLimit(1)
-                    .fixedSize()
-            }
+            Text(Date(timeIntervalSince1970: model.centerTime), format: .dateTime.hour().minute().second())
+                .font(.headline.monospacedDigit())
+                .lineLimit(1)
+                .fixedSize()
             Spacer(minLength: 0)
 
             Button { model.skip(by: -10) } label: { Image(systemName: "gobackward.10") }
@@ -251,31 +272,254 @@ private struct ControlBar: View {
 private struct JumpToDateSheet: View {
     let model: TimelineModel
     @Environment(\.dismiss) private var dismiss
-    @State private var date = Date()
+    @State private var time: Date
+    @State private var eventDays: Set<Int> = []
+    private let day: Date
+
+    init(model: TimelineModel) {
+        self.model = model
+        let now = Date(timeIntervalSince1970: model.centerTime)
+        day = Calendar.current.startOfDay(for: now)
+        _time = State(initialValue: now)
+    }
 
     var body: some View {
         NavigationStack {
-            DatePicker("Go to", selection: $date,
-                       in: Date(timeIntervalSince1970: model.earliestTime)...Date(),
-                       displayedComponents: [.date, .hourAndMinute])
-                .datePickerStyle(.graphical)
-                .padding()
-                .navigationTitle("Go to Time")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Go") {
-                            model.jump(to: date.timeIntervalSince1970)
-                            dismiss()
-                        }
+            ScrollView {
+                VStack(spacing: 8) {
+                    // Tapping a day goes there right away, at the time below.
+                    EventCalendar(day: day,
+                                  range: Date(timeIntervalSince1970: model.earliestTime)...Date(),
+                                  eventDays: eventDays) { picked in
+                        model.jump(to: combine(picked, time).timeIntervalSince1970)
+                        dismiss()
                     }
+                    DatePicker("Time", selection: $time, displayedComponents: .hourAndMinute)
+                        .padding(.horizontal, 20)
                 }
+                .padding(.vertical, 8)
+            }
+            .navigationTitle("Go to Day")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
         }
         // Black in light mode, white in dark mode, like the player controls.
         .tint(.primary)
-        .presentationDetents([.medium, .large])
-        .onAppear { date = Date(timeIntervalSince1970: model.centerTime) }
+        .presentationDetents([.large])
+        .task {
+            let days = (try? await model.client.eventDays(camera: model.camera)) ?? []
+            eventDays = Set(days.map(EventCalendar.key))
+        }
+    }
+
+    /// A day at a time of day.
+    private func combine(_ day: Date, _ time: Date) -> Date {
+        let cal = Calendar.current
+        var parts = cal.dateComponents([.year, .month, .day], from: day)
+        let clock = cal.dateComponents([.hour, .minute], from: time)
+        parts.hour = clock.hour
+        parts.minute = clock.minute
+        return cal.date(from: parts) ?? day
+    }
+}
+
+/// A month calendar with a small dot under each day that has events.
+/// Tapping a day reports it right away.
+private struct EventCalendar: UIViewRepresentable {
+    /// The day being watched; the calendar opens on its month.
+    let day: Date
+    let range: ClosedRange<Date>
+    /// Days with events, as `key`s.
+    let eventDays: Set<Int>
+    let onSelect: (Date) -> Void
+
+    /// A day as one number (20261125). DateComponents carry extra fields (calendar,
+    /// leap month) that make otherwise equal days compare as different.
+    static func key(_ date: Date) -> Int {
+        key(Calendar.current.dateComponents([.year, .month, .day], from: date))
+    }
+
+    static func key(_ parts: DateComponents) -> Int {
+        (parts.year ?? 0) * 10_000 + (parts.month ?? 0) * 100 + (parts.day ?? 0)
+    }
+
+    private static func components(_ key: Int) -> DateComponents {
+        DateComponents(calendar: .current, year: key / 10_000, month: key / 100 % 100, day: key % 100)
+    }
+
+    private static func date(_ parts: DateComponents) -> Date? {
+        Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UICalendarView {
+        let view = UICalendarView()
+        view.calendar = .current
+        view.availableDateRange = DateInterval(start: range.lowerBound, end: range.upperBound)
+        view.tintColor = .label
+        view.delegate = context.coordinator
+        // Nothing starts selected, so tapping any day (even the one being watched) picks it.
+        view.selectionBehavior = UICalendarSelectionSingleDate(delegate: context.coordinator)
+        view.visibleDateComponents = Calendar.current.dateComponents([.year, .month, .calendar], from: day)
+        context.coordinator.shownDays = eventDays
+        return view
+    }
+
+    func updateUIView(_ view: UICalendarView, context: Context) {
+        context.coordinator.parent = self
+        // Event days arrive after the sheet opens.
+        if context.coordinator.shownDays != eventDays {
+            let changed = context.coordinator.shownDays.symmetricDifference(eventDays)
+            context.coordinator.shownDays = eventDays
+            view.reloadDecorations(forDateComponents: changed.map(Self.components), animated: true)
+        }
+    }
+
+    final class Coordinator: NSObject, UICalendarViewDelegate, UICalendarSelectionSingleDateDelegate {
+        var parent: EventCalendar
+        var shownDays: Set<Int> = []
+
+        init(parent: EventCalendar) { self.parent = parent }
+
+        func calendarView(_ calendarView: UICalendarView,
+                          decorationFor dateComponents: DateComponents) -> UICalendarView.Decoration? {
+            guard parent.eventDays.contains(EventCalendar.key(dateComponents)) else { return nil }
+            return .default(color: .secondaryLabel, size: .small)
+        }
+
+        func dateSelection(_ selection: UICalendarSelectionSingleDate, didSelectDate dateComponents: DateComponents?) {
+            guard let parts = dateComponents, let date = EventCalendar.date(parts) else { return }
+            parent.onSelect(date)
+        }
+    }
+}
+
+// MARK: - Day header and events
+
+/// The day under the playhead, how many events it has, and the timeline / events switch.
+private struct DayHeader: View {
+    let model: TimelineModel
+    @Binding var showsList: Bool
+
+    var body: some View {
+        let day = model.currentDay
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(TimelineFormat.dayLabel(model.centerTime)).font(.headline)
+                Group {
+                    if model.eventsDay == day {
+                        Text(model.dayEvents.count == 1 ? "1 event" : "\(model.dayEvents.count) events")
+                    } else {
+                        Text(" ")  // Keeps the height steady while loading.
+                    }
+                }
+                .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { showsList.toggle() }
+            } label: {
+                Image(systemName: showsList ? "clock.arrow.circlepath" : "list.bullet")
+                    .font(.title3)
+                    .frame(width: 44, height: 36)
+            }
+            .tint(.primary)
+            .accessibilityLabel(showsList ? "Show Timeline" : "Show Events")
+        }
+        .padding(.leading)
+        .padding(.trailing, 6)
+        .padding(.bottom, 4)
+        .task(id: day) {
+            // Today keeps getting new events, so check again now and then.
+            while !Task.isCancelled {
+                await model.loadEvents(day: day)
+                guard Calendar.current.isDateInToday(day) else { return }
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+}
+
+/// The day's events, newest first. Tapping one plays it in the video above.
+private struct DayEventList: View {
+    let model: TimelineModel
+    /// The event last tapped, so it's the one marked when events overlap.
+    @State private var tappedID: String?
+
+    var body: some View {
+        Group {
+            if model.eventsDay != model.currentDay {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.dayEvents.isEmpty {
+                ContentUnavailableView("No Events", systemImage: "list.bullet",
+                                       description: Text("Nothing was detected on this day."))
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        let playingID = playingEventID
+                        ForEach(model.dayEvents) { event in
+                            Button {
+                                tappedID = event.id
+                                model.play(event)
+                            } label: {
+                                DayEventRow(event: event, isPlaying: event.id == playingID)
+                            }
+                            .buttonStyle(.plain)
+                            Divider().padding(.leading, 156)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+
+    /// The one event the playhead is in, while watching recordings: the tapped one if
+    /// it's still playing, otherwise the latest one to start.
+    private var playingEventID: String? {
+        guard model.mode != .live else { return nil }
+        let t = model.centerTime
+        let containing = model.dayEvents.filter { t >= $0.startTime - 3 && t <= ($0.endTime ?? model.now) }
+        if let tappedID, containing.contains(where: { $0.id == tappedID }) { return tappedID }
+        return containing.max { $0.startTime < $1.startTime }?.id
+    }
+}
+
+private struct DayEventRow: View {
+    @Environment(FrigateClient.self) private var client
+    let event: FrigateEvent
+    let isPlaying: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            RemoteImage(makeURL: { try client.thumbnailURL(event: event) }, contentMode: .fill)
+                .frame(width: 128, height: 72)
+                .background(Color.secondary.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 3) {
+                Label(event.label.prettyName, systemImage: LabelIcon.symbol(for: event.label))
+                    .font(.headline)
+                Text(event.startDate, format: .dateTime.hour().minute().second())
+                    .font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                Text(durationText)
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(isPlaying ? Color.accentColor.opacity(0.12) : Color.clear)
+        .contentShape(Rectangle())
+    }
+
+    private var durationText: String {
+        guard let duration = event.duration else { return "In progress" }
+        let seconds = max(1, Int(duration.rounded()))
+        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
     }
 }
 
@@ -302,15 +546,27 @@ private struct TimelineStrip: View {
         let checked = Array(model.checkedSpans.values)
         let now = model.now
         let isLight = colorScheme == .light
+        let events = model.loadedEvents
+        let motion = model.shownMotion
 
         GeometryReader { geo in
+            let marks = eventMarks(events, size: geo.size, center: center, spp: spp, now: now)
             Canvas { ctx, size in
                 draw(in: &ctx, size: size, center: center, spp: spp, ranges: ranges,
-                     checked: checked, now: now, isLight: isLight)
+                     checked: checked, motion: motion, now: now, isLight: isLight, marks: marks)
             }
+            .overlay { thumbnails(marks) }
             .overlay { playhead(width: geo.size.width) }
             .overlay(alignment: .bottomTrailing) { zoomButtons.padding(12) }
             .contentShape(Rectangle())
+            // Tapping an event (its bar or picture) jumps to it.
+            .onTapGesture { point in
+                if let event = event(at: point, in: marks) {
+                    model.play(event)
+                } else if let start = motionStart(at: point, motion: motion, center: center, spp: spp) {
+                    model.jump(to: start - 2)
+                }
+            }
             .gesture(drag)
             .simultaneousGesture(magnify)
             .onAppear { model.viewportHeight = geo.size.height }
@@ -372,8 +628,130 @@ private struct TimelineStrip: View {
         .allowsHitTesting(false)
     }
 
+    // MARK: Events on the timeline
+
+    /// Where one event is drawn: a colored bar in the track, and maybe a picture beside it.
+    struct EventMark {
+        let event: FrigateEvent
+        let bar: CGRect
+        var thumbnail: CGRect?
+    }
+
+    private static let barWidth: CGFloat = 6
+    private static let laneSpacing: CGFloat = 12
+    private static let maxLanes = 4
+    private static let thumbnailSize = CGSize(width: 96, height: 54)
+
+    /// Lays out the events in view. Overlapping events go side by side in lanes;
+    /// pictures are shown where they don't overlap each other.
+    private func eventMarks(_ events: [FrigateEvent], size: CGSize, center: Double, spp: Double,
+                            now: Double) -> [EventMark] {
+        let top = Double(Self.playheadY)
+        func y(_ t: Double) -> CGFloat { CGFloat(top - (t - center) / spp) }
+        let tTop = center + top * spp
+        let tBottom = center - (Double(size.height) - top) * spp
+        let minHeight: CGFloat = 8
+
+        // Oldest first, so each event takes the first lane that's free by then.
+        var laneEnds: [Double] = []
+        var marks: [EventMark] = []
+        for event in events.sorted(by: { $0.startTime < $1.startTime }) {
+            let end = max(event.endTime ?? now, event.startTime + Double(minHeight + 4) * spp)
+            let lane: Int
+            if let free = laneEnds.firstIndex(where: { $0 < event.startTime }) {
+                lane = free
+                laneEnds[free] = end
+            } else {
+                lane = min(laneEnds.count, Self.maxLanes - 1)
+                if laneEnds.count < Self.maxLanes { laneEnds.append(end) } else { laneEnds[lane] = max(laneEnds[lane], end) }
+            }
+            guard end > tBottom, event.startTime < tTop else { continue }
+            let y1 = y(min(event.endTime ?? now, now)), y2 = y(event.startTime)
+            let height = max(minHeight, y2 - y1)
+            let x = Self.gapX(trackInset: trackInset) + Self.laneSpacing + 4 + CGFloat(lane) * Self.laneSpacing
+            marks.append(EventMark(event: event,
+                                   bar: CGRect(x: x, y: y2 - height, width: Self.barWidth, height: height)))
+        }
+
+        // Pictures on the right of the track, newest (top) first, skipping any that would overlap.
+        let thumbX = size.width - 16 - 8 - Self.thumbnailSize.width
+        var lastBottom = -CGFloat.infinity
+        for i in marks.indices.sorted(by: { marks[$0].bar.midY < marks[$1].bar.midY }) {
+            let h = Self.thumbnailSize.height
+            // Never above the "Now" line, so the "Now" label stays visible.
+            let top = max(marks[i].bar.midY - h / 2, y(now) + 4)
+            let rect = CGRect(x: thumbX, y: top, width: Self.thumbnailSize.width, height: h)
+            guard rect.minY >= lastBottom + 6 else { continue }
+            marks[i].thumbnail = rect
+            lastBottom = rect.maxY
+        }
+        return marks
+    }
+
+    private func thumbnails(_ marks: [EventMark]) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(marks.filter { $0.thumbnail != nil }, id: \.event.id) { mark in
+                let rect = mark.thumbnail!
+                EventThumbnail(event: mark.event, size: rect.size)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .allowsHitTesting(false)
+    }
+
+    /// The event under a tap, with some slack so thin bars are easy to hit.
+    private func event(at point: CGPoint, in marks: [EventMark]) -> FrigateEvent? {
+        if let hit = marks.first(where: { $0.thumbnail?.contains(point) == true }) { return hit.event }
+        return marks
+            .filter { $0.bar.insetBy(dx: -8, dy: -8).contains(point) }
+            .min { abs($0.bar.midX - point.x) < abs($1.bar.midX - point.x) }?
+            .event
+    }
+
+    /// The start of the motion bar under a tap, if any.
+    private func motionStart(at point: CGPoint, motion: [RecordingRange], center: Double, spp: Double) -> Double? {
+        let x = Self.gapX(trackInset: trackInset) + Self.barWidth / 2
+        guard abs(point.x - x) <= 12 else { return nil }
+        let t = center + Double(Self.playheadY - point.y) * spp
+        let slack = 8 * spp
+        return motion.first { t >= $0.start - slack && t <= $0.end + slack }?.start
+    }
+
+    static let motionColor = Color(.systemYellow)
+
+    /// The column that shows gaps in the recordings and motion, left of the event columns.
+    static func gapX(trackInset: CGFloat) -> CGFloat { trackInset + 10 }
+
+    /// Time that has been checked with the server but has no recording.
+    static func gaps(checked: [ClosedRange<Double>], ranges: [RecordingRange]) -> [ClosedRange<Double>] {
+        var gaps: [ClosedRange<Double>] = []
+        let sorted = ranges.sorted { $0.start < $1.start }
+        for span in checked {
+            var cursor = span.lowerBound
+            for r in sorted where r.end > cursor && r.start < span.upperBound {
+                if r.start > cursor { gaps.append(cursor...r.start) }
+                cursor = max(cursor, r.end)
+            }
+            if cursor < span.upperBound { gaps.append(cursor...span.upperBound) }
+        }
+        return gaps
+    }
+
+    static func color(for label: String) -> Color {
+        switch label {
+        case "person", "face": .red
+        case "car", "truck", "motorcycle", "bus", "bicycle", "license_plate": .green
+        case "dog", "cat", "bird", "horse", "bear", "deer": .orange
+        case "package": .brown
+        default: .blue
+        }
+    }
+
     private func draw(in ctx: inout GraphicsContext, size: CGSize, center: Double, spp: Double,
-                      ranges: [RecordingRange], checked: [ClosedRange<Double>], now: Double, isLight: Bool) {
+                      ranges: [RecordingRange], checked: [ClosedRange<Double>], motion: [RecordingRange],
+                      now: Double, isLight: Bool,
+                      marks: [EventMark]) {
         let top = Self.playheadY
         func y(_ t: Double) -> CGFloat { top - CGFloat((t - center) / spp) }
         // Never draw past "now".
@@ -389,21 +767,22 @@ private struct TimelineStrip: View {
         let track = CGRect(x: trackInset, y: trackTop, width: trackWidth, height: size.height - trackTop)
         ctx.fill(Path(roundedRect: track, cornerRadius: 6), with: .color(footage))
 
-        // Gaps: time that has been checked, drawn gray; footage is drawn over it below.
-        ctx.drawLayer { layer in
-            layer.clip(to: Path(roundedRect: track, cornerRadius: 6))
-            for span in checked where span.upperBound > tBottom && span.lowerBound < tTop {
-                let y1 = y(min(span.upperBound, tTop)), y2 = y(max(span.lowerBound, tBottom))
-                layer.fill(Path(CGRect(x: trackInset, y: y1, width: trackWidth, height: y2 - y1)),
-                           with: .color(Color(.systemGray3)))
-            }
+        // Gaps in the recordings: a gray bar in their own column, like the event bars.
+        // Only time that has been checked with the server can be a gap.
+        let gapX = Self.gapX(trackInset: trackInset)
+        for gap in Self.gaps(checked: checked, ranges: ranges) where gap.upperBound > tBottom && gap.lowerBound < tTop {
+            let y1 = y(min(gap.upperBound, tTop)), y2 = y(max(gap.lowerBound, tBottom))
+            guard y2 - y1 >= 1 else { continue }
+            let rect = CGRect(x: gapX, y: y1, width: Self.barWidth, height: max(Self.barWidth, y2 - y1))
+            ctx.fill(Path(roundedRect: rect, cornerRadius: Self.barWidth / 2), with: .color(Color(.systemGray3)))
         }
 
-        // Recorded footage: white in light mode, black in dark mode.
-        for r in ranges where r.end > tBottom && r.start < tTop {
-            let y1 = y(min(r.end, tTop)), y2 = y(max(r.start, tBottom))
-            let rect = CGRect(x: trackInset, y: y1, width: trackWidth, height: max(2, y2 - y1))
-            ctx.fill(Path(roundedRect: rect, cornerRadius: 4), with: .color(footage))
+        // Motion: a yellow bar in the same column (motion only happens where there's footage).
+        for m in motion where m.end > tBottom && m.start < tTop {
+            let y1 = y(min(m.end, tTop)), y2 = y(max(m.start, tBottom))
+            let height = max(Self.barWidth, y2 - y1)
+            let rect = CGRect(x: gapX, y: y2 - height, width: Self.barWidth, height: height)
+            ctx.fill(Path(roundedRect: rect, cornerRadius: Self.barWidth / 2), with: .color(Self.motionColor))
         }
 
         // Time ticks, aligned to local time.
@@ -433,6 +812,12 @@ private struct TimelineStrip: View {
             t += step
         }
 
+        // Events: a colored bar for each, from its start to its end.
+        for mark in marks {
+            ctx.fill(Path(roundedRect: mark.bar, cornerRadius: Self.barWidth / 2),
+                     with: .color(Self.color(for: mark.event.label)))
+        }
+
         // "Now" marker.
         if now <= tTop {
             let ny = y(now)
@@ -443,6 +828,22 @@ private struct TimelineStrip: View {
             ctx.draw(Text("Now").font(.caption2.bold()).foregroundStyle(.red),
                      at: CGPoint(x: size.width - 20, y: ny - 2), anchor: .bottomTrailing)
         }
+    }
+}
+
+/// An event's picture on the timeline.
+private struct EventThumbnail: View {
+    @Environment(FrigateClient.self) private var client
+    let event: FrigateEvent
+    let size: CGSize
+
+    var body: some View {
+        RemoteImage(makeURL: { try client.thumbnailURL(event: event) }, contentMode: .fill,
+                    cacheKey: "event:\(event.id)")
+            .frame(width: size.width, height: size.height)
+            .background(Color.secondary.opacity(0.2))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
     }
 }
 

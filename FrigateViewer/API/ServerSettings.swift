@@ -12,6 +12,10 @@ final class ServerSettings {
     var appearance: Appearance { didSet { defaults.set(appearance.rawValue, forKey: Keys.appearance) } }
     /// User-chosen camera order. Cameras not listed here go after, A–Z.
     var cameraOrder: [String] { didSet { defaults.set(cameraOrder, forKey: Keys.cameraOrder) } }
+    /// Event labels (like "car") left off the timeline and its event list.
+    var hiddenEventLabels: Set<String> {
+        didSet { defaults.set(hiddenEventLabels.sorted(), forKey: Keys.hiddenEventLabels) }
+    }
 
     private let defaults = UserDefaults.standard
 
@@ -22,6 +26,7 @@ final class ServerSettings {
         static let selfSigned = "allowSelfSigned"
         static let cameraOrder = "cameraOrder"
         static let appearance = "appearance"
+        static let hiddenEventLabels = "hiddenEventLabels"
     }
 
     enum Appearance: String, CaseIterable, Identifiable {
@@ -42,6 +47,7 @@ final class ServerSettings {
         password = Keychain.get(Keys.password) ?? ""
         allowSelfSignedCertificates = defaults.bool(forKey: Keys.selfSigned)
         cameraOrder = defaults.stringArray(forKey: Keys.cameraOrder) ?? []
+        hiddenEventLabels = Set(defaults.stringArray(forKey: Keys.hiddenEventLabels) ?? [])
         appearance = Appearance(rawValue: defaults.string(forKey: Keys.appearance) ?? "") ?? .auto
     }
 

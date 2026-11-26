@@ -27,11 +27,24 @@ final class TimelineModel {
     private(set) var isLivePaused = false
     private(set) var isBuffering = false
     private(set) var previewImage: UIImage?
+    /// What was showing when scrubbing began, so the view can keep showing it
+    /// until the first scrub frame arrives.
+    private(set) var scrubOrigin: Mode = .live
     private(set) var recordingDays: [Date] = []
     private(set) var message: String?
     /// Recordings start muted; audio tracks are disabled entirely while muted so
     /// playback never depends on the audio device.
     private(set) var isMuted = true
+    /// Events for each local day that has been loaded (newest first).
+    private(set) var eventsByDay: [Date: [FrigateEvent]] = [:]
+    /// Stretches of recording with motion, from the recording segments.
+    private(set) var motion: [RecordingRange] = []
+    /// Motion to draw on the timeline, unless it's turned off in Settings.
+    var shownMotion: [RecordingRange] {
+        client.settings.hiddenEventLabels.contains(Self.motionLabel) ? [] : motion
+    }
+    /// The Event Types setting's name for motion.
+    static let motionLabel = "motion"
 
     let player = AVPlayer()
 
@@ -53,6 +66,8 @@ final class TimelineModel {
     @ObservationIgnored private var itemStatusObservation: NSKeyValueObservation?
     @ObservationIgnored private var failObserver: NSObjectProtocol?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
+    /// The time of the frame being fetched, while one is on its way.
+    @ObservationIgnored private var previewInFlight: Double?
     @ObservationIgnored private var liveTask: Task<Void, Never>?
     @ObservationIgnored private var momentumTask: Task<Void, Never>?
 
@@ -99,7 +114,13 @@ final class TimelineModel {
     }
 
     var now: Double { Date().timeIntervalSince1970 }
-    var earliestTime: Double { recordingDays.last?.timeIntervalSince1970 ?? (now - 86400) }
+    /// The oldest recording. Until the oldest day's recordings load, the start of that day;
+    /// after that, its first segment (older footage is deleted part way through a day).
+    var earliestTime: Double {
+        guard let oldest = recordingDays.last else { return now - 86400 }
+        if checkedSpans[oldest] != nil, let first = ranges.first { return first.start }
+        return oldest.timeIntervalSince1970
+    }
 
     // MARK: - Setup
 
@@ -109,6 +130,8 @@ final class TimelineModel {
             recordingDays = days
         }
         await ensureRangesLoaded()
+        // Load the oldest day too, so the timeline stops at the first recording.
+        if let oldest = recordingDays.last { await loadRangesAndWait(days: [oldest]) }
     }
 
     // MARK: - Live
@@ -155,7 +178,7 @@ final class TimelineModel {
                 guard let self, !Task.isCancelled else { return }
                 self.setCenter(self.centerTime + v * 0.016 * self.secondsPerPoint)
                 v *= 0.93
-                if self.centerTime >= self.now { break }
+                if self.centerTime >= self.now || self.centerTime <= self.earliestTime { break }
             }
             guard !Task.isCancelled else { return }
             self?.finishScrub()
@@ -191,6 +214,10 @@ final class TimelineModel {
         if mode != .scrubbing {
             liveTask?.cancel()
             player.pause()
+            scrubOrigin = mode
+            // Don't show a frame from an earlier scrub; the view shows what was
+            // on screen until this scrub's first frame arrives.
+            previewImage = nil
             mode = .scrubbing
             message = nil
         }
@@ -204,6 +231,7 @@ final class TimelineModel {
 
     private func finishScrub() {
         previewTask?.cancel()
+        previewInFlight = nil
         if now - centerTime < Self.liveThreshold {
             goLive()
         } else {
@@ -211,19 +239,26 @@ final class TimelineModel {
         }
     }
 
-    /// Loads a still frame for the playhead position while dragging (debounced).
+    /// Keeps loading frames for the playhead while dragging, one at a time: as soon as
+    /// one arrives, the next is fetched for wherever the playhead is by then.
+    /// This makes the picture follow the finger, like scrubbing a video.
     private func schedulePreview() {
-        previewTask?.cancel()
+        guard previewInFlight == nil else { return }  // The next fetch picks up the new position.
         let t = centerTime
-        guard recordedRange(containing: t) != nil else { return }
+        // Skip known gaps; time that hasn't loaded yet is tried anyway.
+        guard !isKnownGap(t) else { return }
+        previewInFlight = t
         previewTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
-            guard let self, !Task.isCancelled else { return }
-            guard let url = try? self.client.recordingFrameURL(camera: self.camera, time: t, height: 540),
-                  let data = try? await self.client.data(from: url),
-                  !Task.isCancelled,
-                  let image = UIImage(data: data) else { return }
-            self.previewImage = image
+            guard let self else { return }
+            if let url = try? self.client.recordingFrameURL(camera: self.camera, time: t, height: 360),
+               let data = try? await self.client.data(from: url),
+               !Task.isCancelled, let image = UIImage(data: data) {
+                self.previewImage = image
+            }
+            guard !Task.isCancelled else { return }
+            self.previewInFlight = nil
+            // The playhead moved on while this frame loaded: fetch the frame for where it is now.
+            if self.mode == .scrubbing, abs(self.centerTime - t) >= 1 { self.schedulePreview() }
         }
     }
 
@@ -243,7 +278,9 @@ final class TimelineModel {
     private func startPlayback(at requested: Double) async {
         await ensureRangesLoaded()
         var t = requested
-        guard let range = recordedRange(containing: t) ?? ranges.first(where: { $0.start > t }) else {
+        guard let range = recordedRange(containing: t)
+                ?? ranges.first(where: { $0.start > t })
+                ?? ranges.last(where: { $0.end < t }) else {
             message = "No recording here"
             mode = .playback
             player.replaceCurrentItem(with: nil)
@@ -299,10 +336,46 @@ final class TimelineModel {
         if t >= vodStart { centerTime = min(t, now) }
     }
 
+    // MARK: - Events
+
+    /// The local day under the playhead.
+    var currentDay: Date { Calendar.current.startOfDay(for: Date(timeIntervalSince1970: centerTime)) }
+    /// Events for the day under the playhead.
+    var dayEvents: [FrigateEvent] { shown(eventsByDay[currentDay] ?? []) }
+    /// The day under the playhead, once its events have loaded.
+    var eventsDay: Date? { eventsByDay[currentDay] != nil ? currentDay : nil }
+    /// Every loaded event, for drawing on the timeline.
+    var loadedEvents: [FrigateEvent] { shown(eventsByDay.values.flatMap { $0 }) }
+
+    /// Leaves out the event types turned off in Settings.
+    private func shown(_ events: [FrigateEvent]) -> [FrigateEvent] {
+        let hidden = client.settings.hiddenEventLabels
+        return hidden.isEmpty ? events : events.filter { !hidden.contains($0.label) }
+    }
+
+    func loadEvents(day: Date) async {
+        let start = day.timeIntervalSince1970
+        let end = Calendar.current.date(byAdding: .day, value: 1, to: day)!.timeIntervalSince1970
+        guard let found = try? await client.events(camera: camera, after: start, before: end, limit: 500),
+              !Task.isCancelled else { return }
+        eventsByDay[day] = found.sorted { $0.startTime > $1.startTime }
+    }
+
+    /// Plays an event's recording, starting a moment before it.
+    func play(_ event: FrigateEvent) {
+        jump(to: event.startTime - 2)
+    }
+
     // MARK: - Recorded ranges
 
     func recordedRange(containing t: Double) -> RecordingRange? {
         ranges.first { $0.contains(t) }
+    }
+
+    /// True only when `t` has been checked with the server and has no recording.
+    /// Time that hasn't loaded yet (for example after a fast scroll) isn't a gap.
+    func isKnownGap(_ t: Double) -> Bool {
+        recordedRange(containing: t) == nil && checkedSpans.values.contains { $0.contains(t) }
     }
 
     /// Fetches recordings for every local day the viewport touches.
@@ -326,14 +399,31 @@ final class TimelineModel {
             day = cal.date(byAdding: .day, value: 1, to: day)!
         }
         // Cap per pass so a zoomed-out fling doesn't fire dozens of requests.
-        for day in toLoad.suffix(4) {
+        // The playhead's day goes first, so playback always has its ranges.
+        let center = centerTime
+        let nearest = toLoad.sorted {
+            abs($0.timeIntervalSince1970 + 43200 - center) < abs($1.timeIntervalSince1970 + 43200 - center)
+        }
+        inFlight += loadRanges(days: Array(nearest.prefix(4)))
+        // Wait for every day in view, including ones another call already started,
+        // so callers like startPlayback see their ranges.
+        for task in inFlight { await task.value }
+    }
+
+    /// Starts loading recordings for days not already loading; returns the new loads.
+    @discardableResult
+    private func loadRanges(days: [Date]) -> [Task<Void, Never>] {
+        let cal = Calendar.current
+        var started: [Task<Void, Never>] = []
+        for day in days where loadingDays[day] == nil && !loadedDays.contains(day) {
             let task = Task { [weak self] in
                 guard let self else { return }
                 let start = day.timeIntervalSince1970
                 let end = cal.date(byAdding: .day, value: 1, to: day)!.timeIntervalSince1970
                 do {
-                    let found = try await self.client.recordingRanges(camera: self.camera, after: start, before: min(end, self.now))
-                    self.ranges = FrigateClient.merge(self.ranges + found)
+                    let found = try await self.client.recordingSpans(camera: self.camera, after: start, before: min(end, self.now))
+                    self.ranges = FrigateClient.merge(self.ranges + found.ranges)
+                    self.motion = FrigateClient.merge(self.motion + found.motion, tolerance: 30)
                     self.checkedSpans[day] = start...max(start, min(end, self.now))
                     // Today keeps growing; don't mark it as fully loaded.
                     if end < self.now { self.loadedDays.insert(day) }
@@ -343,10 +433,12 @@ final class TimelineModel {
                 self.loadingDays[day] = nil
             }
             loadingDays[day] = task
-            inFlight.append(task)
+            started.append(task)
         }
-        // Wait for every day in view, including ones another call already started,
-        // so callers like startPlayback see their ranges.
-        for task in inFlight { await task.value }
+        return started
+    }
+
+    private func loadRangesAndWait(days: [Date]) async {
+        for task in loadRanges(days: days) { await task.value }
     }
 }

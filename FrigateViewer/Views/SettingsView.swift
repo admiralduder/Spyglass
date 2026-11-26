@@ -41,6 +41,8 @@ struct SettingsView: View {
                         .submitLabel(.go)
                         .onSubmit { focused = nil; Task { await saveAndTest() } }
                     Toggle("Allow self-signed certificate", isOn: $allowSelfSigned)
+                        // The accent is white in dark mode, which hides the knob; switches use green.
+                        .tint(.green)
                     Button {
                         focused = nil
                         Task { await saveAndTest() }
@@ -67,17 +69,20 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Appearance") {
+                Section {
+                    // A plain row with a menu, like the Settings app.
                     Picker("Appearance", selection: Bindable(client.settings).appearance) {
                         ForEach(ServerSettings.Appearance.allCases) { Text($0.title).tag($0) }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
 
                 if client.settings.isConfigured {
                     Section("Cameras") {
                         NavigationLink("Camera Order") { CameraOrderView() }
+                    }
+                    Section("Timeline") {
+                        NavigationLink("Event Types") { EventTypesView() }
                     }
                     }
             }

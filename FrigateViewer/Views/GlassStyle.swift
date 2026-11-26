@@ -6,6 +6,15 @@ extension View {
     func glassCard(cornerRadius: CGFloat = 16, tint: Color? = nil) -> some View {
         modifier(GlassCardModifier(cornerRadius: cornerRadius, tint: tint))
     }
+
+    /// A Liquid Glass button on iOS 26; a plain bordered button on earlier versions.
+    @ViewBuilder func glassButton() -> some View {
+        if #available(iOS 26.0, *) {
+            buttonStyle(.glass)
+        } else {
+            buttonStyle(.bordered)
+        }
+    }
 }
 
 private struct GlassCardModifier: ViewModifier {

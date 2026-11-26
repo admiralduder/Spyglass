@@ -63,14 +63,10 @@ struct LiveControlBar: View {
     var body: some View {
         HStack(spacing: 14) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(TimelineFormat.dayLabel(context.date.timeIntervalSince1970))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(context.date, format: .dateTime.hour().minute().second())
-                        .font(.headline.monospacedDigit())
-                        .lineLimit(1)
-                        .fixedSize()
-                }
+                Text(context.date, format: .dateTime.hour().minute().second())
+                    .font(.headline.monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize()
             }
             Spacer(minLength: 0)
 
